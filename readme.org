@@ -1,0 +1,481 @@
+#+title: Experiment to create a network simulator with BMCs and visualization
+* Idea
++Since GNS3 can utilize KVM/Libvirt+ I wondered if it may be possible to simulate
+Baseboard Management Controllers (BMC) for either +GNS3,+ libvirt or QEMU. That way it
+would be possible to simulate a whole stack from Bare Metal machines and
+networking (Cisco Switches) through Hyper-visors software defined networks (SDN)
+up to Container Workloads and Container Networks (CNI).
+
+The goal of this project is to make continuous deployment of networks more
+accessible for education and presentation purpose. Since current Dell Servers
+for example offer iDrac with Redfish compatibility as well as many other
+vendors, redfish should be prioritized as a BMC target.
+
+In addition a network topology visualization for the hyper-visor and SDN should
+add some clearance and feedback.
+* Prior Work
+** Sushy-Tools
+The Redhat Openstack project provides a redfish compatible simulator. This
+simulator is part of the [[https://github.com/openstack/sushy-tools][sushy-tools]] sub-project, whereby [[https://docs.openstack.org/sushy/latest/][sushy]] itself is
+openstacks compatibility layer for redfish.
+
+This simulator would is able to run in /static/ mode, which means it only
+simulates the api or in so called /dynamic/ mode which is able to control
+virtual machines (VMs). In the dynamic mode the sushy emulator can simulate one
+or more virtual /chassis/. Each Chassis represents virtual machines and a BMC.
+*** Docker / Podman
+The [[https://github.com/mwhahaha/sushy-emulator][sushy-emulator]] was successfully containerized.
+** OpenBMC
+OpenBMC aims to open source Management engines like black boxed BMCs (like iDrac)
+or Enterprise CPU features (like vPro / Intel AMT). OpenBMC is a Linux built
+upon Yocto Linux, specialized in embedded systems. While basically everyone in
+theory could adopt OpenBMC it's mainly adopted by IBM or OpenPower  compatible
+systems like IBM Power Servers or Raptor Workstations and opencompute based
+systems.
+
+It is possible to emulate openbmc with qemu and there is even special openbmc
+fork of qemu which emulates the environment of an BMC even more correct.
+However the complexities of implementation outweigh the benefits even though
+utilizing a /real/ BMC would probably be an obvious route to take when
+simulating server chassis with gns3. There are currently simply no interfaces to
+control qemu or libvirt via openbmc. Eventhough implementing those would be a
+nice exercise it's out of scope for this project.
+
+* Setup
+** KILL Deprecated: GNS3
+*GNS3 does not cover this use case since it acts as it's own rudimentary Hyper-visor.*
+GNS3 will run inside a virtual machine itself. In this example the GNS3 will run
+on kvm. First we need to download and unpack the VM Package from the official
+sources.
+#+Shell: sh
+#+begin_src sh :tangle downloadGns3.sh :results verbatim :session gns3-creation
+declare CACHE=./cache
+declare VERSION=2.2.37
+declare FILENAME=GNS3.VM.KVM.$VERSION.zip
+declare URL=https://github.com/GNS3/gns3-gui/releases/download/v$VERSION/$FILENAME
+#Download if not yet downloaded
+if [[ ! -s "$CACHE/$FILENAME" ]]; then
+    wget -O $CACHE/$FILENAME $URL
+fi
+echo "Currently downloaded:"
+ls -anh $CACHE/$FILENAME
+
+unzip -o -d $CACHE $CACHE/$FILENAME
+#+end_src
+
+#+RESULTS:
+:
+: sh-5.2$ sh-5.2$ sh-5.2$ sh-5.2$ > > sh-5.2$ Currently downloaded:
+: -rw-r--r--. 1 1000 1000 969M Jan 25 09:38 ./cache/GNS3.VM.KVM.2.2.37.zip
+: sh-5.2$ Archive:  ./cache/GNS3.VM.KVM.2.2.37.zip
+:   inflating: ./cache/GNS3 VM-disk001.qcow2
+:   inflating: ./cache/GNS3 VM-disk002.qcow2
+:   inflating: ./cache/start-gns3vm.sh
+
+Next we will create a new system with virt-install and virsh, first let us
+define some variables
+#+begin_src sh :tangle startGNS3.sh : results verbatim :session gns3-creation
+#!/bin/bash
+declare HOST="qemu:///system"  #avoid using user space libvirt
+declare VM="GNS3-BMC-test"
+declare CACHE="./cache"
+
+echo VM: $VM for Host: $HOST
+#+end_src
+
+#+RESULTS:
+|                                                                            |
+| sh-5.2$ sh-5.2$ sh-5.2$ sh-5.2$ VM: GNS3-BMC-test for Host: qemu:///system |
+
+
+#+begin_src sh :tangle startGNS3.sh :results verbatim :session gns3-creation
+#Remove previous installation
+virsh -c $HOST destroy $VM
+virsh -c $HOST undefine $VM
+
+#Install the new vm.
+virt-install -n $VM \
+    --connect $HOST \
+    --vcpus 4 \
+    --memory 8096 \
+    --disk $CACHE/GNS3\ VM-disk001.qcow2,device=disk,format=qcow2 \
+    --disk $CACHE/GNS3\ VM-disk002.qcow2,device=disk,format=qcow2 \
+    --os-variant=debian11 \
+    --import \
+    --autoconsole none
+#+end_src
+
+#+RESULTS:
+:
+: Domain 'GNS3-BMC-test' destroyed
+: Domain 'GNS3-BMC-test' has been undefined
+: sh-5.2$ sh-5.2$ > > > > > > > > WARNING  /var/home/benji/projects/gns3-bmc/cache/GNS3 VM-disk001.qcow2 may not be accessible by the hypervisor. You will need to grant the 'qemu' user search permissions for the following directories: ['/var/home/benji']
+: WARNING  /var/home/benji/projects/gns3-bmc/cache/GNS3 VM-disk002.qcow2 may not be accessible by the hypervisor. You will need to grant the 'qemu' user search permissions for the following directories: ['/var/home/benji']
+:
+: Starting install...
+: Creating domain...                                          |    0 B  00:00
+: Domain creation completed.
+
+
+To stop the vm later we can use
+#+begin_src sh :tangle stopGNS3.sh :results verbatim :session gns3-creation
+virsh -c $HOST start $VM
+#+end_src
+
+#+RESULTS:
+: Domain 'GNS3-BMC-test' started
+
+To start the vm again, use
+#+begin_src sh :tangle stopGNS3.sh :results verbatim :session gns3-creation
+virsh -c $HOST shutdown $VM
+#+end_src
+
+#+RESULTS:
+: Domain 'GNS3-BMC-test' is being shutdown
+
+Now that the machine is online we can begin to populate GNS3 with some default
+objects:
+To get some parameters about the machines we use:
+#+begin_src sh :tangle populateGNS3.sh :results verbatim :session gns3-creation
+declare ADDRESS=$(virsh --quiet -c $HOST domifaddr $VM | sed -E "s/.*ipv.? *(.*)\/.*/\1/")
+declare HTTP_ADDRESS=http://$ADDRESS
+declare HTTP_API=$HTTP_ADDRESS/v2
+declare PROJECT=test
+
+echo ADDRESS: $ADDRESS
+echo HTTP_ADDRESS: $HTTP_ADDRESS
+echo HTTP_API: $HTTP_API
+#+end_src
+
+#+RESULTS:
+:
+: sh-5.2$ sh-5.2$ sh-5.2$ sh-5.2$ ADDRESS: 192.168.122.143
+: HTTP_ADDRESS: http://192.168.122.143
+: HTTP_API: http://192.168.122.143/v2
+
+GNS3 offers a [[https://gns3-server.readthedocs.io/en/stable/][REST API]]. With this we can populate a basic GNS3
+#+begin_src sh :tangle populateGNS3.sh :results verbatim :session gns3-creation
+#curl $HTTP_API/version
+JQ_PROJECT_ID() {
+    declare INPUT="${@:- $(cat /dev/stdin)}"
+    echo $INPUT | \
+        jq -r '.[] | select(.name=="test")|.project_id' \
+        || echo $INPUT | jq -r '.project_id'
+}
+declare PROJECT_ID="$(curl --silent $HTTP_API/projects | JQ_PROJECT_ID)"
+
+if [[ -z $PROJECT_ID ]]; then
+    echo "Project not yet created"
+    curl -X POST $HTTP_API/projects -d '{"name": "test"}' | JQ_PROJECT_ID
+    # PROJECT_ID=$(curl -X POST $HTTP_API/projects -d '{"name": "test"}' | JQ_PROJECT_ID)
+fi
+
+echo Current Project ID: $PROJECT_ID
+
+declare APPLIANCES=$(curl $HTTP_API/appliances?update=yes)
+# curl $HTTP_API/projects | jq "{project_id}"
+#+end_src
+
+#+RESULTS:
+:
+: > > > > > sh-5.2$ sh-5.2$ sh-5.2$ > > > > sh-5.2$ sh-5.2$ Current Project ID: 16d0eaf5-5db5-464c-a210-296b276a7d45
+: sh-5.2$   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+:                                  Dload  Upload   Total   Spent    Left  Speed
+:   0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  829k  100  829k    0     0  2443k      0 --:--:-- --:--:-- --:--:-- 2440k
+
+** VM for Libvirt and skydive
+Instead of using a explicit it should be possible to simulate devops
+infrastructure by actually utilizing devops infrastructure + a visual guide.
+This might be even extended by something like a gitops or more simple a
+filewatcher (somehing like glitch.io maybe?)  and some browser editor for simple
+editing.
+
+*** Create the VM
+We will build a coreos vm with kvm, libvirt + qemu, terraform and skydive.
+
+#+begin_src yaml :tangle labvm.butane
+variant: fcos
+version: 1.4.0
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMS13b3znoVb1B7kRyKeQFpOn+dK6zPV47Z1ITAchle0 elektrowolle
+    - name: benji
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMS13b3znoVb1B7kRyKeQFpOn+dK6zPV47Z1ITAchle0 elektrowolle
+
+#+end_src
+
+Adding  libvirtd and virsh as well as git instaweb
+#+begin_src yaml :tangle labvm.butane
+systemd:
+  units:
+    - name: rpm-ostree-install-libvirt-instaweb.service
+      enabled: True
+      contents: |
+        [Unit]
+        Description=Layer libvirt dependencies
+        Wants=network-online.target
+        After=network-online.target
+        Before=zincati.service
+        ConditionPathExists=!/var/lib/%N.stamp
+        FailureAction=reboot
+        SuccessAction=reboot
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/rpm-ostree override remove nfs-utils-coreos
+        ExecStart=-/usr/bin/rpm-ostree install --apply-live \
+            --allow-inactive --assumeyes \
+            bridge-utils \
+            git-daemon \
+            git-instaweb \
+            gitweb \
+            httpd \
+            libguestfs-tools \
+            libvirt-client \
+            libvirt-daemon-config-network \
+            libvirt-daemon-kvm \
+            libvirt-nss \
+            lldpd \
+            python3-libguestfs \
+            qemu-kvm \
+            virt-install \
+            virt-top
+        ExecStart=/bin/touch /var/lib/%N.stamp
+        ExecStart=/usr/bin/systemctl reboot --no-block
+
+        [Install]
+        WantedBy=multi-user.target
+#+end_src
+
+Additionally we will request a few coreos / podman container.
+- Skydive for monitoring
+- and Concourse for CI
+
+#+CAPTION: Service for Skydive Analyzer
+#+begin_src yaml :tangle labvm.butane
+    - name: skydive-allinone.service
+      enabled: True
+      contents: |
+        [Unit]
+        Description=Skydive Analyzer and Interface
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        TimeoutStartSec=0
+        ExecStartPre=-/bin/podman kill skydive-allinone
+        ExecStartPre=-/bin/podman rm skydive-allinone
+        ExecStartPre=-/bin/sh -c "podman image exists skydive/skydive:latest && podman pull docker.io/skydive/skydive"
+        ExecStart=/bin/podman run --name skydive-allinone \
+            -p 8082:8082 \
+            --hostname skydive-allinone \
+            docker.io/skydive/skydive allinone
+
+        [Install]
+        WantedBy=multi-user.target
+#+end_src
+
+#+CAPTION: Service for Skydive Agent
+#+begin_src yaml :tangle labvm.butane
+    - name: skydive-libvirtd.service
+      enabled: True
+      contents: |
+        [Unit]
+        Description=Skydive agent for libvirtd
+        After=skydive-network.service
+        Wants=network-online.target
+        Wants=llpd.service
+        Wants=podman.socket
+        Wants=libvirtd.service
+        Wants=libvirtd.socket
+
+        [Service]
+        TimeoutStartSec=0
+        ExecStartPre=-/bin/podman kill skydive-agent
+        ExecStartPre=-/bin/podman rm skydive-agent
+        ExecStartPre=-/bin/sh -c "podman image exists skydive/skydive:latest && podman pull docker.io/skydive/skydive"
+        ExecStart=/bin/podman run --name skydive-agent \
+            --hostname skydive-agent \
+            -e SKYDIVE_AGENT_TOPOLOGY_PROBES='lldp libvirt netns docker' \
+            -e SKYDIVE_ANALYZERS='localhost-allinone:8082' \
+            -e SKYDIVE_AGENT_TOPOLOGY_NETNS_RUN_PATH='/host/netns' \
+            -v /var/run/libvirt/libvirt-sock-ro:/var/run/libvirt/libvirt-sock-ro \
+            -v /var/run/podman/podman.sock:/var/run/docker.sock \
+            -v /var/run/netns:/host/netns \
+            --pid=host \
+            --privileged \
+            --network host \
+            docker.io/skydive/skydive agent
+
+        [Install]
+        WantedBy=multi-user.target
+#+end_src
+
+#+CAPTION: Network for Concourse services
+#+begin_src yaml :tangle labvm.butane
+    - name: concourse-network.service
+      enabled: True
+      contents: |
+        [Unit]
+        Description=network for Concourse
+        After=network-online.target
+        Wants=network-online.target
+        ConditionPathExists=!/var/lib/%N.stamp
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/bin/podman network create concourse
+        ExecStart=/bin/touch /var/lib/%N.stamp
+
+        [Install]
+        WantedBy=multi-user.target
+#+end_src
+
+
+#+CAPTION: Service for Postgres for Concourse
+#+begin_src yaml :tangle labvm.butane
+    - name: concourse-db.service
+      enabled: True
+      contents: |
+        [Unit]
+        Description=Postgres DB for Concourse
+        After=concourse-network.service
+        Wants=network-online.target
+
+        [Service]
+        TimeoutStartSec=0
+        ExecStartPre=-/bin/podman kill concourse-db
+        ExecStartPre=-/bin/podman rm concourse-db
+        ExecStartPre=-/bin/sh -c "podman image exists docker.io/postgres && podman pull docker.io/postgres"
+        ExecStart=/bin/podman run --name concourse-db \
+          --network concourse \
+          -e POSTGRES_DB=concourse \
+          -e POSTGRES_PASSWORD=concourse-pass \
+          -e POSTGRES_USER=concourse-user \
+          docker.io/postgres
+
+        [Install]
+        WantedBy=multi-user.target
+#+end_src
+
+#+CAPTION: Service for Concourse Web Client
+#+begin_src yaml :tangle labvm.butane
+    - name: concourse.service
+      enabled: True
+      contents: |
+         [Unit]
+         Description=Concourse Quickstart
+         After=concourse-db.service
+         Wants=network-online.target
+
+         [Service]
+         Restart=always
+         TimeoutStartSec=0
+         ExecStartPre=-/bin/podman kill concourse-quickstart
+         ExecStartPre=-/bin/podman rm concourse-quickstart
+         ExecStartPre=-/bin/sh -c "podman image exists docker.io/concourse/concourse  && /bin/podman pull docker.io/concourse/concourse"
+         ExecStart=/bin/sh -c '/bin/podman run --name concourse-quickstart \
+             --network concourse \
+             -p 8080:8080 \
+             -e CONCOURSE_POSTGRES_HOST=concourse-db \
+             -e CONCOURSE_POSTGRES_USER=concourse-user \
+             -e CONCOURSE_POSTGRES_PASSWORD=concourse-pass \
+             -e CONCOURSE_POSTGRES_DATABASE=concourse \
+             -e CONCOURSE_ADD_LOCAL_USER=user:user \
+             -e CONCOURSE_MAIN_TEAM_LOCAL_USER=user \
+             -e CONCOURSE_EXTERNAL_URL=http://$(ip addr show enp1s0 | sed -n "s/.* \(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)\/.*/\1/p"):8080 \
+             -e CONCOURSE_WORKER_BAGGAGECLAIM_DRIVER=overlay \
+             -e CONCOURSE_X_FRAME_OPTIONS=allow \
+             -e CONCOURSE_CONTENT_SECURITY_POLICY="*" \
+             -e CONCOURSE_CLUSTER_NAME=lab \
+             -e CONCOURSE_WORKER_CONTAINERD_DNS_SERVER="8.8.8.8" \
+             -e CONCOURSE_WORKER_RUNTIME="containerd" \
+             --privileged docker.io/concourse/concourse quickstart'
+         [Install]
+         WantedBy=multi-user.target
+#+end_src
+
+#+Caption: Autologin on serial for convenience
+#+begin_src yaml :tangle labvm.butane
+    - name: serial-getty@ttyS0.service
+      enabled: True
+      dropins:
+      - name: autologin-core.conf
+        contents: |
+          [Service]
+          # Override Execstart in main unit
+          ExecStart=
+          # Add new Execstart with `-` prefix to ignore failure`
+          ExecStart=-/usr/sbin/agetty --autologin core --noclear %I $TERM
+#+end_src
+
+
+#+begin_src sh :tangle create_vm.sh :results verbatim
+butane ./labvm.butane > labvm.ign
+#+end_src
+
+#+RESULTS:
+
+
+#+begin_src sh :tangle create_vm.sh :results verbatim :session start_hypervisor_vm
+IGNITION_CONFIG="$(pwd)/labvm.ign"
+IMAGE="$HOME/.local/share/libvirt/images/fedora-coreos-37.20230122.3.0-qemu.x86_64.qcow2"
+VM_NAME="bmc-libvirt"
+VCPUS="2"
+RAM_MB="8192"
+STREAM="stable"
+DISK_GB="10"
+
+# coreos-installer download -s "${STREAM}" -p qemu -f qcow2.xz --decompress -C ~/.local/share/libvirt/images/
+
+# For x86 / aarch64,
+IGNITION_DEVICE_ARG=(--qemu-commandline="-fw_cfg name=opt/com.coreos/config,file=${IGNITION_CONFIG}")
+
+# Setup the correct SELinux label to allow access to the config
+chcon --verbose --type svirt_home_t ${IGNITION_CONFIG}
+
+virsh -c qemu:///system destroy ${VM_NAME}
+virsh -c qemu:///system undefine --remove-all-storage ${VM_NAME}
+
+virt-install --connect="qemu:///system" --name="${VM_NAME}" --vcpus="${VCPUS}" --memory="${RAM_MB}" \
+        --os-variant="fedora-coreos-$STREAM" --import --graphics=none \
+        --disk="size=${DISK_GB},backing_store=${IMAGE}" \
+        --network bridge=virbr0 "${IGNITION_DEVICE_ARG[@]}"
+#+end_src
+
+#+RESULTS:
+#+begin_example 
+changing security context of '/var/home/benji/projects/gns3-bmc/labvm.ign'
+Domain 'bmc-libvirt' destroyed
+
+Domain 'bmc-libvirt' has been undefined
+Volume 'vda'(/var/lib/libvirt/images/bmc-libvirt-22.qcow2) removed.
+
+
+Starting install...
+Allocating 'bmc-libvirt-22.qcow2'                           |    0 B  00:00 ...
+Creating domain...                                          |    0 B  00:00
+
+Running text console command: virsh --connect qemu:///system console bmc-libvirt
+Domain creation completed.
+#+end_example
+
+
+
+* Concept and Considerations
+Multiple attempts could implement the desired behavior in GNS3. For now I will
+focus on realizing in steps:
+1) Create two Networks. A management Network and a general purpose network.
+   Inside the Management Network I'll create a Docker Container which runs
+   sushy-tools. This container will have access to the libvirt socket.
+   In Gns3 Container appear to be equal or indistinguishable from virtual
+   machines. Thus naming is especially important and the Container running will
+   be named BMC.
+   Make sure sushy-simulator runs and can be reached via http(s) from the management
+   network. Also validate the connection between sushy-simulator and
+2) Now create more networks
