@@ -1,3 +1,4 @@
 cache/
-.butane
-.ign
+!labvm.butane
+*.butane
+*.ign

@@ -198,17 +198,21 @@ variant: fcos
 version: 1.4.0
 passwd:
   users:
-    - name: core
-      ssh_authorized_keys:
-        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMS13b3znoVb1B7kRyKeQFpOn+dK6zPV47Z1ITAchle0 elektrowolle
-    - name: benji
-      ssh_authorized_keys:
-        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMS13b3znoVb1B7kRyKeQFpOn+dK6zPV47Z1ITAchle0 elektrowolle
-
+  - name: core
+    ssh_authorized_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMS13b3znoVb1B7kRyKeQFpOn+dK6zPV47Z1ITAchle0 elektrowolle
+  - name: benji
+    ssh_authorized_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMS13b3znoVb1B7kRyKeQFpOn+dK6zPV47Z1ITAchle0 elektrowolle
+ignition:
+  config:
+    merge:
 #+end_src
 
 Adding  libvirtd and virsh as well as git instaweb
-#+begin_src yaml :tangle labvm.butane
+#+begin_src yaml :tangle rpm-ostree-install.service.labvm.butane :exports src :results none
+variant: fcos
+version: 1.4.0
 systemd:
   units:
     - name: rpm-ostree-install-libvirt-instaweb.service
@@ -230,9 +234,6 @@ systemd:
         ExecStart=-/usr/bin/rpm-ostree install --apply-live \
             --allow-inactive --assumeyes \
             bridge-utils \
-            git-daemon \
-            git-instaweb \
-            gitweb \
             httpd \
             libguestfs-tools \
             libvirt-client \
@@ -251,176 +252,387 @@ systemd:
         WantedBy=multi-user.target
 #+end_src
 
+#+begin_src yaml :tangle labvm.butane
+    - local: rpm-ostree-install.service.labvm.ign
+      compression: null
+#+end_src
 Additionally we will request a few coreos / podman container.
 - Skydive for monitoring
 - and Concourse for CI
-
+*** Skydive Network visualisation
 #+CAPTION: Service for Skydive Analyzer
-#+begin_src yaml :tangle labvm.butane
-    - name: skydive-allinone.service
-      enabled: True
-      contents: |
-        [Unit]
-        Description=Skydive Analyzer and Interface
-        After=network-online.target
-        Wants=network-online.target
+#+begin_src yaml :tangle skydive-allinone.service.labvm.butane
+variant: fcos
+version: 1.4.0
+systemd:
+  units:
+  - name: skydive-allinone.service
+    enabled: True
+    contents: |
+      [Unit]
+      Description=Skydive Analyzer and Interface
+      After=network-online.target
+      Wants=network-online.target
 
-        [Service]
-        TimeoutStartSec=0
-        ExecStartPre=-/bin/podman kill skydive-allinone
-        ExecStartPre=-/bin/podman rm skydive-allinone
-        ExecStartPre=-/bin/sh -c "podman image exists skydive/skydive:latest && podman pull docker.io/skydive/skydive"
-        ExecStart=/bin/podman run --name skydive-allinone \
-            -p 8082:8082 \
-            --hostname skydive-allinone \
-            docker.io/skydive/skydive allinone
+      [Service]
+      TimeoutStartSec=0
+      ExecStartPre=-/bin/podman kill skydive-allinone
+      ExecStartPre=-/bin/podman rm skydive-allinone
+      ExecStartPre=-/bin/sh -c "podman image exists skydive/skydive:latest || podman pull docker.io/skydive/skydive"
+      ExecStart=/bin/podman run --name skydive-allinone \
+          -p 8082:8082 \
+          --hostname skydive-allinone \
+          docker.io/skydive/skydive allinone
 
-        [Install]
-        WantedBy=multi-user.target
+      [Install]
+      WantedBy=multi-user.target
 #+end_src
 
 #+CAPTION: Service for Skydive Agent
-#+begin_src yaml :tangle labvm.butane
-    - name: skydive-libvirtd.service
-      enabled: True
-      contents: |
-        [Unit]
-        Description=Skydive agent for libvirtd
-        After=skydive-network.service
-        Wants=network-online.target
-        Wants=llpd.service
-        Wants=podman.socket
-        Wants=libvirtd.service
-        Wants=libvirtd.socket
+#+begin_src yaml :tangle skydive-agent.service.butane
+variant: fcos
+version: 1.4.0
+systemd:
+  units:
+  - name: skydive-agent.service
+    enabled: True
+    contents: |
+      [Unit]
+      Description=Skydive agent for libvirtd
+      After=skydive-network.service
+      Wants=network-online.target
+      Wants=llpd.service
+      Wants=podman.socket
+      Wants=libvirtd.service
+      Wants=libvirtd.socket
 
-        [Service]
-        TimeoutStartSec=0
-        ExecStartPre=-/bin/podman kill skydive-agent
-        ExecStartPre=-/bin/podman rm skydive-agent
-        ExecStartPre=-/bin/sh -c "podman image exists skydive/skydive:latest && podman pull docker.io/skydive/skydive"
-        ExecStart=/bin/podman run --name skydive-agent \
-            --hostname skydive-agent \
-            -e SKYDIVE_AGENT_TOPOLOGY_PROBES='lldp libvirt netns docker' \
-            -e SKYDIVE_ANALYZERS='localhost-allinone:8082' \
-            -e SKYDIVE_AGENT_TOPOLOGY_NETNS_RUN_PATH='/host/netns' \
-            -v /var/run/libvirt/libvirt-sock-ro:/var/run/libvirt/libvirt-sock-ro \
-            -v /var/run/podman/podman.sock:/var/run/docker.sock \
-            -v /var/run/netns:/host/netns \
-            --pid=host \
-            --privileged \
-            --network host \
-            docker.io/skydive/skydive agent
+      [Service]
+      Restart=always
+      TimeoutStartSec=0
+      ExecStartPre=-/bin/podman kill skydive-agent
+      ExecStartPre=-/bin/podman rm skydive-agent
+      ExecStartPre=-/bin/sh -c "podman image exists skydive/skydive:latest || podman pull docker.io/skydive/skydive"
+      ExecStart=/bin/podman run --name skydive-agent \
+          --hostname skydive-agent \
+          -e SKYDIVE_AGENT_TOPOLOGY_PROBES='lldp libvirt netns docker' \
+          -e SKYDIVE_ANALYZERS='localhost:8082' \
+          -e SKYDIVE_AGENT_TOPOLOGY_NETNS_RUN_PATH='/host/netns' \
+          -v /var/run/libvirt/libvirt-sock-ro:/var/run/libvirt/libvirt-sock-ro \
+          -v /var/run/podman/podman.sock:/var/run/docker.sock \
+          -v /var/run/netns:/host/netns \
+          --pid=host \
+          --privileged \
+          --network host \
+          docker.io/skydive/skydive agent
 
-        [Install]
-        WantedBy=multi-user.target
+      [Install]
+      WantedBy=multi-user.target
 #+end_src
 
-#+CAPTION: Network for Concourse services
 #+begin_src yaml :tangle labvm.butane
-    - name: concourse-network.service
-      enabled: True
-      contents: |
-        [Unit]
-        Description=network for Concourse
-        After=network-online.target
-        Wants=network-online.target
-        ConditionPathExists=!/var/lib/%N.stamp
+    - local: skydive-agent.service.ign
+      compression: null
+    - local: skydive-allinone.service.labvm.ign
+      compression: null
+#+end_src
+*** Concourse CI
+#+CAPTION: Network for Concourse services
+#+begin_src yaml :tangle concourse-network.service.labvm.butane
+variant: fcos
+version: 1.4.0
+systemd:
+  units:
+  - name: concourse-network.service
+    enabled: True
+    contents: |
+      [Unit]
+      Description=network for Concourse
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/var/lib/%N.stamp
 
-        [Service]
-        Type=oneshot
-        RemainAfterExit=yes
-        ExecStart=/bin/podman network create concourse
-        ExecStart=/bin/touch /var/lib/%N.stamp
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/podman network create concourse
+      ExecStart=/bin/touch /var/lib/%N.stamp
 
-        [Install]
-        WantedBy=multi-user.target
+      [Install]
+      WantedBy=multi-user.target
 #+end_src
 
 
 #+CAPTION: Service for Postgres for Concourse
-#+begin_src yaml :tangle labvm.butane
-    - name: concourse-db.service
-      enabled: True
-      contents: |
-        [Unit]
-        Description=Postgres DB for Concourse
-        After=concourse-network.service
-        Wants=network-online.target
+#+begin_src yaml :tangle concourse-db.service.labvm.butane
+variant: fcos
+version: 1.4.0
+systemd:
+  units:
+  - name: concourse-db.service
+    enabled: True
+    contents: |
+      [Unit]
+      Description=Postgres DB for Concourse
+      After=concourse-network.service
+      Wants=network-online.target
 
-        [Service]
-        TimeoutStartSec=0
-        ExecStartPre=-/bin/podman kill concourse-db
-        ExecStartPre=-/bin/podman rm concourse-db
-        ExecStartPre=-/bin/sh -c "podman image exists docker.io/postgres && podman pull docker.io/postgres"
-        ExecStart=/bin/podman run --name concourse-db \
-          --network concourse \
-          -e POSTGRES_DB=concourse \
-          -e POSTGRES_PASSWORD=concourse-pass \
-          -e POSTGRES_USER=concourse-user \
-          docker.io/postgres
+      [Service]
+      TimeoutStartSec=0
+      ExecStartPre=-/bin/podman kill concourse-db
+      ExecStartPre=-/bin/podman rm concourse-db
+      ExecStartPre=-/bin/sh -c "podman image exists docker.io/postgres || podman pull docker.io/postgres"
+      ExecStart=/bin/podman run --name concourse-db \
+        --network concourse \
+        -e POSTGRES_DB=concourse \
+        -e POSTGRES_PASSWORD=concourse-pass \
+        -e POSTGRES_USER=concourse-user \
+        docker.io/postgres
 
-        [Install]
-        WantedBy=multi-user.target
+      [Install]
+      WantedBy=multi-user.target
 #+end_src
 
 #+CAPTION: Service for Concourse Web Client
-#+begin_src yaml :tangle labvm.butane
-    - name: concourse.service
-      enabled: True
-      contents: |
-         [Unit]
-         Description=Concourse Quickstart
-         After=concourse-db.service
-         Wants=network-online.target
+#+begin_src yaml :tangle concourse.service.labvm.butane
+variant: fcos
+version: 1.4.0
+systemd:
+  units:
+  - name: concourse.service
+    enabled: True
+    contents: |
+       [Unit]
+       Description=Concourse Quickstart
+       After=concourse-db.service
+       Wants=network-online.target
 
-         [Service]
-         Restart=always
-         TimeoutStartSec=0
-         ExecStartPre=-/bin/podman kill concourse-quickstart
-         ExecStartPre=-/bin/podman rm concourse-quickstart
-         ExecStartPre=-/bin/sh -c "podman image exists docker.io/concourse/concourse  && /bin/podman pull docker.io/concourse/concourse"
-         ExecStart=/bin/sh -c '/bin/podman run --name concourse-quickstart \
-             --network concourse \
-             -p 8080:8080 \
-             -e CONCOURSE_POSTGRES_HOST=concourse-db \
-             -e CONCOURSE_POSTGRES_USER=concourse-user \
-             -e CONCOURSE_POSTGRES_PASSWORD=concourse-pass \
-             -e CONCOURSE_POSTGRES_DATABASE=concourse \
-             -e CONCOURSE_ADD_LOCAL_USER=user:user \
-             -e CONCOURSE_MAIN_TEAM_LOCAL_USER=user \
-             -e CONCOURSE_EXTERNAL_URL=http://$(ip addr show enp1s0 | sed -n "s/.* \(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)\/.*/\1/p"):8080 \
-             -e CONCOURSE_WORKER_BAGGAGECLAIM_DRIVER=overlay \
-             -e CONCOURSE_X_FRAME_OPTIONS=allow \
-             -e CONCOURSE_CONTENT_SECURITY_POLICY="*" \
-             -e CONCOURSE_CLUSTER_NAME=lab \
-             -e CONCOURSE_WORKER_CONTAINERD_DNS_SERVER="8.8.8.8" \
-             -e CONCOURSE_WORKER_RUNTIME="containerd" \
-             --privileged docker.io/concourse/concourse quickstart'
-         [Install]
-         WantedBy=multi-user.target
+       [Service]
+       Restart=always
+       TimeoutStartSec=0
+       ExecStartPre=-/bin/podman kill concourse-quickstart
+       ExecStartPre=-/bin/podman rm concourse-quickstart
+       ExecStartPre=-/bin/sh -c "podman image exists docker.io/concourse/concourse  || /bin/podman pull docker.io/concourse/concourse"
+       ExecStart=/bin/sh -c '/bin/podman run --name concourse-quickstart \
+           --network concourse \
+           -p 8080:8080 \
+           -e CONCOURSE_POSTGRES_HOST=concourse-db \
+           -e CONCOURSE_POSTGRES_USER=concourse-user \
+           -e CONCOURSE_POSTGRES_PASSWORD=concourse-pass \
+           -e CONCOURSE_POSTGRES_DATABASE=concourse \
+           -e CONCOURSE_ADD_LOCAL_USER=user:user \
+           -e CONCOURSE_MAIN_TEAM_LOCAL_USER=user \
+           -e CONCOURSE_EXTERNAL_URL=http://$(ip addr show enp1s0 | sed -n "s/.* \(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)\/.*/\1/p"):8080 \
+           -e CONCOURSE_WORKER_BAGGAGECLAIM_DRIVER=overlay \
+           -e CONCOURSE_X_FRAME_OPTIONS=allow \
+           -e CONCOURSE_CONTENT_SECURITY_POLICY="*" \
+           -e CONCOURSE_CLUSTER_NAME=lab \
+           -e CONCOURSE_WORKER_CONTAINERD_DNS_SERVER="8.8.8.8" \
+           -e CONCOURSE_WORKER_RUNTIME="containerd" \
+           --privileged docker.io/concourse/concourse quickstart'
+       [Install]
+       WantedBy=multi-user.target
 #+end_src
 
+#+begin_src yaml :tangle labvm.butane
+    - local: concourse-db.service.labvm.ign
+      compression: null
+    - local: concourse-network.service.labvm.ign
+      compression: null
+    - local: concourse.service.labvm.ign
+      compression: null
+#+end_src
+
+*** Git
+Gitweb is the default web app for git and git-httpd-backend augments git wit the
+capability to serve repositories via http(s).
+
+#+Caption: Git and Git httpd backend Container
+#+begin_src dockerfile :tangle gitweb/git.Dockerfile
+FROM registry.fedoraproject.org/fedora
+RUN yum install -y git gitweb httpd
+
+COPY gitweb.conf /etc/gitweb.conf
+COPY gitweb.httpd.conf /etc/httpd/conf.d/gitweb.conf
+COPY entrypoint.sh entrypoint.sh
+
+
+EXPOSE 80
+ENV GIT_BASE_URL "Set-GIT_BASE_URL-env-to-the-vm-address/git"
+
+ENTRYPOINT /bin/sh ./entrypoint.sh $@
+#+end_src
+
+#+CAPTION: Entrypoint
+#+begin_src sh :tangle gitweb/entrypoint.sh
+#!/bin/sh
+
+git init --bare /var/lib/git/infra.git -b main
+chmod -R 7777 /var/lib/git/infra.git
+git --git-dir=/var/lib/git/infra.git config --add http.uploadpack true
+git --git-dir=/var/lib/git/infra.git config --add http.receivepack true
+git --git-dir=/var/lib/git/infra.git config --add http.getanyfile true
+
+httpd -DFOREGROUND $@
+#+end_src
+
+#+Caption: Apache configuration for gitweb and git-httpd-backend
+#+begin_src conf :tangle gitweb/gitweb.httpd.conf
+#Redirect logs to stdout and stderr for easy listening
+ErrorLog /dev/stderr
+TransferLog /dev/stdout
+
+#Tell git http backend where to find the projects
+SetEnv GIT_HTTP_EXPORT_ALL
+SetEnv GIT_PROJECT_ROOT /var/lib/git
+
+SetEnvIf Git-Protocol ".*" GIT_PROTOCOL=$0
+
+AliasMatch ^/git/(.*/objects/[0-9a-f]{2}/[0-9a-f]{38})$          /var/lib/git/$1
+AliasMatch ^/git/(.*/objects/pack/pack-[0-9a-f]{40}.(pack|idx))$ /var/lib/git/$1
+ScriptAliasMatch \
+    "(?x)^/git/(.*/(HEAD | \
+    info/refs | \
+    objects/info/[^/]+ | \
+    git-(upload|receive)-pack))$" \
+    /usr/libexec/git-core/git-http-backend/$1
+
+Alias /git /var/www/git
+
+<Directory /var/www/git>
+  Options +ExecCGI
+  SetEnv GIT_BASE_URL ${GIT_BASE_URL}
+  AddHandler cgi-script .cgi
+  DirectoryIndex gitweb.cgi
+</Directory>
+
+<Directory "/usr/libexec/git-core*">
+   Options +ExecCGI
+   Require all granted
+</Directory>
+
+<LocationMatch "^/git/*$">
+   Order allow,deny
+   Allow from all
+</LocationMatch>
+#+end_src
+
+#+Caption: Apache configuration for gitweb and git-httpd-backend
+#+begin_src perl :tangle gitweb/gitweb.conf
+# Set the path to git projects.  This is an absolute filesystem path which will
+# be prepended to the project path.
+our $projectroot = "/var/lib/git";
+
+# Set the list of git base URLs used for URL to where fetch project from, i.e.
+# the full URL is "$git_base_url/$project". By default this is empty
+#our @git_base_url_list = qw(git://git.example.com
+#                            ssh://git.example.com/var/lib/git);
+our @git_base_url_list = ( $ENV{GIT_BASE_URL} );
+#+end_src
+
+
+#+CAPTION: Service to install gitweb
+#+begin_src yaml :tangle git.service.labvm.butane
+variant: fcos
+version: 1.4.0
+storage:
+  files:
+  - path: /home/core/gitweb/entrypoint.sh
+    contents:
+      local: gitweb/entrypoint.sh
+  - path: /home/core/gitweb/git.Dockerfile
+    contents:
+      local: gitweb/git.Dockerfile
+  - path: /home/core/gitweb/gitweb.conf
+    contents:
+      local: gitweb/gitweb.conf
+  - path: /home/core/gitweb/gitweb.httpd.conf
+    contents:
+      local: gitweb/gitweb.httpd.conf
+
+systemd:
+  units:
+  - name: gitweb.service
+    enabled: True
+    contents: |
+      [Unit]
+      Description=Gitweb and Git-http-backend
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Restart=always
+      TimeoutStartSec=0
+      RemainAfterExit=yes
+      ExecStartPre=-/usr/bin/podman volume create git
+      ExecStartPre=-/usr/bin/podman build -t gitweb \
+              -f /var/home/core/gitweb/git.Dockerfile \
+              /var/home/core/gitweb
+      ExecStartPre=-/usr/bin/podman stop gitweb
+      ExecStartPre=-/usr/bin/podman rm -f gitweb
+      ExecStart=/bin/sh -c 'podman run -it \
+      --name gitweb \
+      -p 8083:80 \
+      -e GIT_BASE_URL=http://$(ip addr show enp1s0 | sed -n "s/.* \(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)\/.*/\1/p"):8083/git/ \
+      -v gitweb:/var/lib/git/infra.git \
+      gitweb'
+
+      [Install]
+      WantedBy=multi-user.target
+#+end_src
+
+#+begin_src yaml :tangle labvm.butane
+    - local: git.service.labvm.ign
+      compression: null
+#+end_src
+
+*** Serial auto login
 #+Caption: Autologin on serial for convenience
-#+begin_src yaml :tangle labvm.butane
-    - name: serial-getty@ttyS0.service
-      enabled: True
-      dropins:
-      - name: autologin-core.conf
-        contents: |
-          [Service]
-          # Override Execstart in main unit
-          ExecStart=
-          # Add new Execstart with `-` prefix to ignore failure`
-          ExecStart=-/usr/sbin/agetty --autologin core --noclear %I $TERM
+#+begin_src yaml :tangle serial-autologin.service.labvm.butane
+variant: fcos
+version: 1.4.0
+systemd:
+  units:
+  - name: serial-getty@ttyS0.service
+    enabled: True
+    dropins:
+    - name: autologin-core.conf
+      contents: |
+        [Service]
+        # Override Execstart in main unit
+        ExecStart=
+        # Add new Execstart with `-` prefix to ignore failure`
+        ExecStart=-/usr/sbin/agetty --autologin core --noclear %I $TERM
 #+end_src
 
+#+begin_src yaml :tangle labvm.butane
+    - local: serial-autologin.service.labvm.ign
+      compression: null
+#+end_src
 
+*** Building and running Hypervisor
 #+begin_src sh :tangle create_vm.sh :results verbatim
-butane ./labvm.butane > labvm.ign
+#!/bin/bash
+
+declare -a butane_files=( $(ls *.*.butane) )
+
+for file in ${butane_files[@]}; do
+    echo "compile $file"
+    declare ign_name=$(echo $file | sed -s "s/butane/ign/g")
+    butane --files-dir $(pwd) --pretty --strict $file > $ign_name
+done
+
+butane --strict --pretty --files-dir . ./labvm.butane > labvm.ign
 #+end_src
 
 #+RESULTS:
-
+: compile concourse-db.service.labvm.butane
+: compile concourse-network.service.labvm.butane
+: compile concourse.service.labvm.butane
+: compile git.service.labvm.butane
+: compile rpm-ostree-install.service.labvm.butane
+: compile serial-autologin.service.labvm.butane
+: compile skydive-agent.service.butane
+: compile skydive-allinone.service.labvm.butane
 
 #+begin_src sh :tangle create_vm.sh :results verbatim :session start_hypervisor_vm
 IGNITION_CONFIG="$(pwd)/labvm.ign"
@@ -440,7 +652,7 @@ IGNITION_DEVICE_ARG=(--qemu-commandline="-fw_cfg name=opt/com.coreos/config,file
 chcon --verbose --type svirt_home_t ${IGNITION_CONFIG}
 
 virsh -c qemu:///system destroy ${VM_NAME}
-virsh -c qemu:///system undefine --remove-all-storage ${VM_NAME}
+virsh -c qemu:///system undefine  ${VM_NAME}
 
 virt-install --connect="qemu:///system" --name="${VM_NAME}" --vcpus="${VCPUS}" --memory="${RAM_MB}" \
         --os-variant="fedora-coreos-$STREAM" --import --graphics=none \
@@ -449,7 +661,7 @@ virt-install --connect="qemu:///system" --name="${VM_NAME}" --vcpus="${VCPUS}" -
 #+end_src
 
 #+RESULTS:
-#+begin_example 
+#+begin_example
 changing security context of '/var/home/benji/projects/gns3-bmc/labvm.ign'
 Domain 'bmc-libvirt' destroyed
 
@@ -464,7 +676,6 @@ Starting install...
 Running text console command: virsh --connect qemu:///system console bmc-libvirt
 Domain creation completed.
 #+end_example
-
 
 
 * Concept and Considerations

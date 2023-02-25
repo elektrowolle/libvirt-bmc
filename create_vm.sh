@@ -1,4 +1,14 @@
-butane ./labvm.butane > labvm.ign
+#!/bin/bash
+
+declare -a butane_files=( $(ls *.*.butane) )
+
+for file in ${butane_files[@]}; do
+    echo "compile $file"
+    declare ign_name=$(echo $file | sed -s "s/butane/ign/g")
+    butane --files-dir $(pwd) --pretty --strict $file > $ign_name
+done
+
+butane --strict --pretty --files-dir . ./labvm.butane > labvm.ign
 
 IGNITION_CONFIG="$(pwd)/labvm.ign"
 IMAGE="$HOME/.local/share/libvirt/images/fedora-coreos-37.20230122.3.0-qemu.x86_64.qcow2"
@@ -17,7 +27,7 @@ IGNITION_DEVICE_ARG=(--qemu-commandline="-fw_cfg name=opt/com.coreos/config,file
 chcon --verbose --type svirt_home_t ${IGNITION_CONFIG}
 
 virsh -c qemu:///system destroy ${VM_NAME}
-virsh -c qemu:///system undefine --remove-all-storage ${VM_NAME}
+virsh -c qemu:///system undefine  ${VM_NAME}
 
 virt-install --connect="qemu:///system" --name="${VM_NAME}" --vcpus="${VCPUS}" --memory="${RAM_MB}" \
         --os-variant="fedora-coreos-$STREAM" --import --graphics=none \
